@@ -76,6 +76,15 @@ install_and_configure() {
     echo "slapd slapd/internal_admin_password_again password ${LDAP_PASS}" | debconf-set-selections
     dpkg-reconfigure -f noninteractive slapd
 
+    log_info "Configurando contraseña raíz del administrador..."
+    HASHED_PASS=$(slappasswd -s "$LDAP_PASS")
+    ldapmodify -Y EXTERNAL -H ldapi:/// <<EOF
+dn: olcDatabase={1}mdb,cn=config
+changetype: modify
+replace: olcRootPW
+olcRootPW: $HASHED_PASS
+EOF
+
     log_info "Inyectando privilegios de superusuario (SASL/EXTERNAL)..."
     
     # 2. APLICACIÓN ATÓMICA DE PRIVILEGIOS
@@ -142,6 +151,23 @@ EOF
     systemctl restart slapd
 }
 
+# --- Función para esperar a que slapd esté listo ---
+wait_slapd_ready() {
+    log_info "Esperando a que slapd esté listo..."
+    local max_attempts=30
+    local attempt=0
+    while [[ $attempt -lt $max_attempts ]]; do
+        if ldapsearch -Y EXTERNAL -H ldapi:/// -b "$BASE_DN" -s base dn >/dev/null 2>&1; then
+            log_info "slapd está listo."
+            return 0
+        fi
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+    log_error "slapd no respondió después de ${max_attempts} segundos."
+    return 1
+}
+
 # --- Funciones de Verificación ---
 verify_certificates() {
     log_info "Verificando certificados..."
@@ -175,7 +201,7 @@ verify_structure() {
 
 verify_admin_auth() {
     log_info "Verificando autenticación de administrador..."
-    if ldapsearch -D "cn=admin,$BASE_DN" -w "$LDAP_PASS" -H ldapi:/// -b "$BASE_DN" -s base dn >/dev/null 2>&1; then
+    if ldapsearch -D "cn=admin,$BASE_DN" -w "$LDAP_PASS" -H ldapi:/// -b "$BASE_DN" -s base dn 2>&1 | grep -q "dn:.*$BASE_DN"; then
         log_info "Autenticación de admin exitosa."
     else
         log_error "Error en autenticación de admin: Posible 'Invalid credentials'."
@@ -207,15 +233,15 @@ verify_ports() {
 
 verify_connections() {
     log_info "Verificando conexiones LDAP..."
-    if ldapsearch -H ldap://localhost:389 -b "$BASE_DN" -s base dn >/dev/null 2>&1; then
-        log_info "Conexión LDAP localhost exitosa."
+    if ldapsearch -D "cn=admin,$BASE_DN" -w "$LDAP_PASS" -H ldap://localhost:389 -b "$BASE_DN" -s base dn 2>&1 | grep -q "dn:.*$BASE_DN"; then
+        log_info "Conexión LDAP localhost:389 exitosa."
     else
-        log_error "Conexión LDAP localhost fallida."
+        log_error "Conexión LDAP localhost:389 fallida."
     fi
-    if ldapsearch -H ldaps://localhost:636 -b "$BASE_DN" -s base dn >/dev/null 2>&1; then
-        log_info "Conexión LDAPS localhost exitosa."
+    if LDAPTLS_REQCERT=never ldapsearch -D "cn=admin,$BASE_DN" -w "$LDAP_PASS" -H ldaps://localhost:636 -b "$BASE_DN" -s base dn 2>&1 | grep -q "dn:.*$BASE_DN"; then
+        log_info "Conexión LDAPS localhost:636 exitosa."
     else
-        log_error "Conexión LDAPS localhost fallida."
+        log_error "Conexión LDAPS localhost:636 fallida (verificar certificado SSL)."
     fi
 }
 
@@ -225,6 +251,9 @@ get_config
 purge_previous
 install_and_configure
 setup_tls
+
+# --- Esperando a que slapd esté listo ---
+wait_slapd_ready
 
 # --- Verificaciones ---
 verify_certificates
