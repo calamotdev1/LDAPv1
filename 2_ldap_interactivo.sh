@@ -47,7 +47,7 @@ get_config() {
 
     read -p "OUs a crear [users groups]: " OUS
     OUS=${OUS:-"users groups"}
-    OUS_ARRAY=($OUS)
+    local IFS=' '; OUS_ARRAY=($OUS)
 
     echo -n "Password de LDAP Admin: "
     read -s LDAP_PASS
